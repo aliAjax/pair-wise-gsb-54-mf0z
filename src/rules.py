@@ -6,15 +6,18 @@ from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, 
 
 INITIAL_STATE = "detected"
 CREATE_ROLES = {'noc_operator'}
-ACTION_ROLES = {'approve': {'repair_manager'}, 'mobilize': {'vessel_master'}, 'survey': {'cable_engineer'}, 'splice': {'cable_engineer'}, 'test': {'noc_operator'}, 'restore': {'noc_operator', 'repair_manager'}, 'cancel': {'repair_manager'}}
-TRANSITIONS = {'approve': {'detected': 'approved'}, 'mobilize': {'approved': 'mobilized'}, 'survey': {'mobilized': 'surveyed'}, 'splice': {'surveyed': 'spliced'}, 'test': {'spliced': 'tested'}, 'restore': {'tested': 'restored'}, 'cancel': {'detected': 'cancelled', 'approved': 'cancelled', 'mobilized': 'cancelled'}}
+ACTION_ROLES = {'approve': {'repair_manager'}, 'mobilize': {'vessel_master'}, 'survey': {'cable_engineer'}, 'survey_revise': {'cable_engineer'}, 'splice': {'cable_engineer'}, 'test': {'noc_operator'}, 'restore': {'noc_operator', 'repair_manager'}, 'cancel': {'repair_manager'}}
+TRANSITIONS = {'approve': {'detected': 'approved'}, 'mobilize': {'approved': 'mobilized'}, 'survey': {'mobilized': 'surveyed'}, 'survey_revise': {'surveyed': 'surveyed', 'mobilized': 'mobilized'}, 'splice': {'surveyed': 'spliced'}, 'test': {'spliced': 'tested'}, 'restore': {'tested': 'restored'}, 'cancel': {'detected': 'cancelled', 'approved': 'cancelled', 'mobilized': 'cancelled'}}
+# 调度台与外单位角色（不参与旧状态机动作，仅用于动员流程接口）
+DISPATCH_ROLES = {'dispatcher'}
+EXTERNAL_ROLES = {'external_org'}
 
 
 class DomainRules:
     INITIAL_STATE = INITIAL_STATE
 
     def known_role(self, role: str) -> bool:
-        all_roles = set(CREATE_ROLES)
+        all_roles = set(CREATE_ROLES) | DISPATCH_ROLES | EXTERNAL_ROLES
         for roles in ACTION_ROLES.values():
             all_roles.update(roles)
         return role == "admin" or role in all_roles
@@ -90,6 +93,16 @@ class DomainRules:
                 raise ValidationError("故障点不在申报区段")
             changes["fault_location_km"] = fault_km
             summary = "故障点勘察完成"
+        elif action == "survey_revise":
+            fault_km = number(data, "fault_location_km", 0)
+            if not (float(p["start_km"]) <= fault_km <= float(p["end_km"])):
+                raise ValidationError("故障点不在申报区段")
+            changes["fault_location_km"] = fault_km
+            if "required_spare_km" in data:
+                revised_spare = number(data, "required_spare_km", 0)
+                changes["required_spare_km"] = revised_spare
+            changes["survey_revision"] = int(p.get("survey_revision", 0)) + 1
+            summary = "勘察结果变更（第%d次）" % changes["survey_revision"]
         elif action == "splice":
             loss = number(data, "splice_loss_db", 0)
             if loss > 0.2:
