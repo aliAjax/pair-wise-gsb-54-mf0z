@@ -6,8 +6,8 @@ from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, 
 
 INITIAL_STATE = "detected"
 CREATE_ROLES = {'noc_operator'}
-ACTION_ROLES = {'approve': {'repair_manager'}, 'mobilize': {'vessel_master'}, 'survey': {'cable_engineer'}, 'splice': {'cable_engineer'}, 'test': {'noc_operator'}, 'restore': {'noc_operator', 'repair_manager'}, 'cancel': {'repair_manager'}}
-TRANSITIONS = {'approve': {'detected': 'approved'}, 'mobilize': {'approved': 'mobilized'}, 'survey': {'mobilized': 'surveyed'}, 'splice': {'surveyed': 'spliced'}, 'test': {'spliced': 'tested'}, 'restore': {'tested': 'restored'}, 'cancel': {'detected': 'cancelled', 'approved': 'cancelled', 'mobilized': 'cancelled'}}
+ACTION_ROLES = {'approve': {'repair_manager'}, 'mobilize': {'vessel_master'}, 'survey': {'cable_engineer'}, 'survey_update': {'cable_engineer'}, 'splice': {'cable_engineer'}, 'test': {'noc_operator'}, 'restore': {'noc_operator', 'repair_manager'}, 'cancel': {'repair_manager'}}
+TRANSITIONS = {'approve': {'detected': 'approved'}, 'mobilize': {'approved': 'mobilized'}, 'survey': {'mobilized': 'surveyed'}, 'survey_update': {'surveyed': 'surveyed'}, 'splice': {'surveyed': 'spliced'}, 'test': {'spliced': 'tested'}, 'restore': {'tested': 'restored'}, 'cancel': {'detected': 'cancelled', 'approved': 'cancelled', 'mobilized': 'cancelled'}}
 
 
 class DomainRules:
@@ -82,14 +82,14 @@ class DomainRules:
             changes["weather_window_hours"] = float(data["weather_window_hours"])
             changes["vessel_name"] = text(data, "vessel_name")
             summary = "抢修船已动员"
-        elif action == "survey":
+        elif action in ("survey", "survey_update"):
             if not boolean(data, "survey_complete"):
                 raise ValidationError("勘察尚未完成")
             fault_km = number(data, "fault_location_km", 0)
             if not (float(p["start_km"]) <= fault_km <= float(p["end_km"])):
                 raise ValidationError("故障点不在申报区段")
             changes["fault_location_km"] = fault_km
-            summary = "故障点勘察完成"
+            summary = "勘察结果已更新" if action == "survey_update" else "故障点勘察完成"
         elif action == "splice":
             loss = number(data, "splice_loss_db", 0)
             if loss > 0.2:

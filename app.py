@@ -4,7 +4,9 @@ from pathlib import Path
 
 from src.audit import AuditRecorder
 from src.http_api import create_server
+from src.mobilization_service import MobilizationService
 from src.repository import Repository
+from src.resource_repository import ResourceRepository
 from src.rules import DomainRules
 from src.service import Service
 
@@ -13,11 +15,29 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB = BASE_DIR / "subsea-cable-repair.db"
 DEFAULT_PORT = 8330
 
+SEED_RESOURCES = [
+    {"rid": "CS-1", "kind": "vessel", "name": "海缆船一号", "capacity_qty": 1.0},
+    {"rid": "CS-2", "kind": "vessel", "name": "海缆船二号", "capacity_qty": 1.0},
+    {"rid": "CREW-A", "kind": "crew", "name": "接续班组甲", "capacity_qty": 1.0},
+    {"rid": "CREW-B", "kind": "crew", "name": "接续班组乙", "capacity_qty": 1.0},
+    {"rid": "BATCH-01", "kind": "cable", "name": "备缆批次01", "capacity_qty": 20.0},
+    {"rid": "BATCH-02", "kind": "cable", "name": "备缆批次02", "capacity_qty": 15.0},
+    {"rid": "BATCH-03", "kind": "cable", "name": "备缆批次03", "capacity_qty": 10.0},
+]
 
-def build_service(db_path: str) -> Service:
+
+def build_service(db_path: str, seed: bool = True) -> Service:
     repository = Repository(db_path)
     audit = AuditRecorder(repository)
-    return Service(repository, DomainRules(), audit)
+    resource_repository = ResourceRepository(db_path)
+    mobilization_service = MobilizationService(repository, resource_repository)
+    service = Service(repository, DomainRules(), audit, mobilization_service)
+    if seed:
+        for item in SEED_RESOURCES:
+            resource_repository.upsert_resource(
+                item["rid"], item["kind"], item["name"], item["capacity_qty"], None, None,
+            )
+    return service
 
 
 def parse_args():

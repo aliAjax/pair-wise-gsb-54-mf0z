@@ -12,6 +12,10 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+MOB_BY_NO_RE = re.compile(r"^/api/mobilizations/by-no/([A-Za-z0-9_-]+)$")
+MOB_RE = re.compile(r"^/api/mobilizations/(\d+)$")
+MOB_ACTION_RE = re.compile(r"^/api/mobilizations/(\d+)/(confirm|load|timeline)$")
+RECEIPT_REVIEW_RE = re.compile(r"^/api/receipts/(\d+)/review$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -59,6 +63,8 @@ def make_handler(service: Any, static_dir: Path):
             if isinstance(exc, DomainError):
                 self._send(exc.status, {"error": exc.code, "message": str(exc)})
             else:
+                import traceback
+                traceback.print_exc()
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
         def do_GET(self) -> None:
@@ -82,7 +88,29 @@ def make_handler(service: Any, static_dir: Path):
                     return
                 match = AUDIT_RE.match(parsed.path)
                 if match:
-                    self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
+                    query = parse_qs(parsed.query)
+                    if query.get("merged", ["0"])[0] == "1":
+                        self._send(200, {"items": service.mobilization_service.merged_timeline(self._actor(), int(match.group(1)))})
+                    else:
+                        self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
+                    return
+                if parsed.path == "/api/resources":
+                    self._send(200, {"items": service.mobilization_service.resources.list_resources()})
+                    return
+                if parsed.path == "/api/board":
+                    self._send(200, {"items": service.mobilization_service.board(self._actor())})
+                    return
+                match = MOB_ACTION_RE.match(parsed.path)
+                if match and match.group(2) == "timeline":
+                    self._send(200, {"items": service.mobilization_service.timeline(self._actor(), int(match.group(1)))})
+                    return
+                match = MOB_BY_NO_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.mobilization_service.get_by_no(self._actor(), match.group(1)))
+                    return
+                match = MOB_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.mobilization_service.get(self._actor(), int(match.group(1))))
                     return
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
@@ -98,6 +126,49 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                if parsed.path == "/api/resources":
+                    self._send(200, service.mobilization_service.upsert_resource(self._actor(), body.get("data", {})))
+                    return
+                if parsed.path == "/api/mobilizations":
+                    record_id = body.get("record_id")
+                    if not isinstance(record_id, int):
+                        raise ValidationError("record_id必须是整数")
+                    mob = service.mobilization_service.create_draft(
+                        self._actor(), body.get("mobilization_no", ""), record_id, body.get("data", {}))
+                    self._send(201, mob)
+                    return
+                mob_receipts_re = re.compile(r"^/api/mobilizations/(\d+)/receipts$")
+                match = mob_receipts_re.match(parsed.path)
+                if match:
+                    receipt = service.mobilization_service.register_receipt(
+                        self._actor(), int(match.group(1)), body.get("data", {}))
+                    self._send(201, receipt)
+                    return
+                match = MOB_ACTION_RE.match(parsed.path)
+                if match and match.group(2) in ("confirm", "load"):
+                    mob_service = service.mobilization_service
+                    if match.group(2) == "confirm":
+                        result = mob_service.confirm(self._actor(), int(match.group(1)))
+                    else:
+                        result = mob_service.load(self._actor(), int(match.group(1)))
+                    self._send(200, result)
+                    return
+                draft_re = re.compile(r"^/api/mobilizations/(\d+)/draft$")
+                match = draft_re.match(parsed.path)
+                if match:
+                    version = body.get("expected_version")
+                    if not isinstance(version, int):
+                        raise ValidationError("expected_version必须是整数")
+                    result = service.mobilization_service.update_draft(
+                        self._actor(), int(match.group(1)), version, body.get("data", {}))
+                    self._send(200, result)
+                    return
+                match = RECEIPT_REVIEW_RE.match(parsed.path)
+                if match:
+                    result = service.mobilization_service.review_receipt(
+                        self._actor(), int(match.group(1)), body.get("data", {}))
+                    self._send(200, result)
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:

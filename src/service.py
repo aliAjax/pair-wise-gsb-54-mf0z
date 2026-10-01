@@ -3,15 +3,18 @@ from typing import Any, Dict, List, Optional
 
 from .audit import AuditRecorder
 from .domain import Actor, PermissionDenied, text
+from .mobilization_service import MobilizationService
 from .repository import Repository
 from .rules import DomainRules
 
 
 class Service:
-    def __init__(self, repository: Repository, rules: DomainRules, audit: AuditRecorder = None) -> None:
+    def __init__(self, repository: Repository, rules: DomainRules, audit: AuditRecorder = None,
+                 mobilization_service: MobilizationService = None) -> None:
         self.repository = repository
         self.rules = rules
         self.audit = audit or AuditRecorder(repository)
+        self.mobilization_service = mobilization_service
 
     @staticmethod
     def _actor(actor: Actor) -> Actor:
@@ -52,7 +55,7 @@ class Service:
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
         new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
-        return self.repository.mutate(
+        updated = self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
             state=new_state,
@@ -61,6 +64,34 @@ class Service:
             action=action,
             details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
         )
+        self._after_transition(actor, updated, action, data or {})
+        return updated
+
+    def _after_transition(self, actor: Actor, record: Dict[str, Any], action: str, data: Dict[str, Any]) -> None:
+        """动员子系统挂钩（无动员单时为空操作）。"""
+        if self.mobilization_service is None or self.mobilization_service.resources is None:
+            return
+        resources = self.mobilization_service.resources
+        try:
+            if action in ("survey", "survey_update"):
+                # 勘察结果确定/变化：未接续的占用立即失效，动员单退回草稿按新需求重算。
+                required = record["payload"].get("required_spare_km")
+                affected = resources.invalidate_for_record(record["id"], required, actor.user_id, action)
+                if affected:
+                    self.audit.note(record["id"], actor.user_id, "mobilization_invalidated",
+                                    {"affected_mobilization_ids": affected, "reason": action,
+                                     "new_required_spare_km": required})
+            elif action == "splice":
+                # 接续完成：备缆已消耗，占用转为 consumed，动员单关闭。
+                resources.complete_for_record(record["id"], actor.user_id)
+            elif action == "cancel":
+                # 故障单取消：未接续占用立即释放，动员单作废。
+                resources.cancel_for_record(record["id"], actor.user_id)
+        except Exception:
+            # 挂钩失败不能回滚已提交的故障单状态；审计中可见原状态推进。
+            if action in ("survey", "survey_update", "splice", "cancel"):
+                self.audit.note(record["id"], actor.user_id, "mobilization_hook_failed", {"action": action})
+            raise
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)
